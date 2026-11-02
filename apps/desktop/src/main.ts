@@ -39,7 +39,7 @@ import { desktopUpdateChannel } from './update-channel.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
 import { prepareDesktopUpdateWindow } from './update-window.ts'
 import { DesktopCommandManager } from './command-management.ts'
-import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
+import { serveWebDocument, authenticateWebHost, forgetStaleHostCookies, forwardWebRequest } from './web-document.ts'
 import { DesktopFatalRecovery } from './fatal-recovery.ts'
 import { pruneCrashReports, RendererConsoleTail, writeCrashReport, type CrashReportSource } from './crash-report.ts'
 import { OperationJournal } from './operation-journal.ts'
@@ -530,6 +530,10 @@ async function main(): Promise<void> {
       start: async () => {
         const ready = await host.start()
         hostCookie = await authenticateWebHost(ready.url)
+        await forgetStaleHostCookies(session.defaultSession.cookies, ready.url, hostCookie).catch(() => {
+          // Cleanup only bounds the header this launch forwards; a Host that already
+          // authenticated still serves it, so a locked cookie store cannot block startup.
+        })
         hostUrl = ready.url
         if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
         injections = ready.injections

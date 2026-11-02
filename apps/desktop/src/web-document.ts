@@ -49,6 +49,41 @@ export async function authenticateWebHost(url: string): Promise<string> {
   return end < 0 ? cookie : cookie.slice(0, end)
 }
 
+/** Persistent storage of the browser-session cookies a Host hands to this shell. */
+export interface HostCookieStore {
+  /** @param filter - URL selecting the cookies of the Host authority. @returns every cookie stored for its host. */
+  get(filter: { url: string }): Promise<readonly { name: string }[]>
+  /** @param url - authenticated Host URL. @param name - cookie to delete. @returns after deletion. */
+  remove(url: string, name: string): Promise<void>
+}
+
+/**
+ * Delete the Host cookies earlier launches left in a persistent browser jar.
+ * The Host picks a new port on every launch, and its cookie name, path, and
+ * thirty-day lifetime are all derived from that authority, so each launch
+ * stores one more cookie without replacing its predecessor. The accumulated
+ * `Cookie` header eventually passes the Host's header limit, every launch is
+ * refused with 431, and the window never opens again. This shell forwards the
+ * current cookie itself, so nothing in the jar is needed after the exchange.
+ * @param store - cookie store of the session that received the Host cookies.
+ * @param url - authenticated Host URL of this launch.
+ * @param cookie - `name=value` pair forwarded to that Host.
+ * @returns names of the deleted cookies, in store order.
+ * @throws When the pair carries no cookie name; deleting unguarded would empty the store.
+ */
+export async function forgetStaleHostCookies(
+  store: HostCookieStore, url: string, cookie: string,
+): Promise<string[]> {
+  const at = cookie.indexOf('=')
+  if (at <= 0) throw new Error('Desktop Host cookie has no name')
+  const kept = cookie.slice(0, at)
+  // Every cookie of this host belongs to a Host launch, because this shell owns
+  // the authority and the page's own Cookie jar never sees these cookies.
+  const stale = (await store.get({ url })).map(item => item.name).filter(name => name !== kept)
+  for (const name of stale) await store.remove(url, name)
+  return stale
+}
+
 /**
  * Response headers not relayed to the renderer. `set-cookie` would hand the
  * Host's authentication cookie to the page's cookie jar, which the shell owns

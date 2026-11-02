@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { authenticateWebHost, forwardWebRequest, serveWebDocument } from '../src/web-document.ts'
+import { authenticateWebHost, forgetStaleHostCookies, forwardWebRequest, serveWebDocument } from '../src/web-document.ts'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -33,6 +33,43 @@ it('requires the Host authentication exchange and retains only its cookie value'
   vi.stubGlobal('fetch', fetch)
   expect(await authenticateWebHost('http://127.0.0.1:1234/?token=owned')).toBe('session=owned')
   await expect(authenticateWebHost('http://127.0.0.1:1234/')).rejects.toThrow('authentication failed')
+})
+
+it('deletes the Host cookies earlier launches stored and keeps the forwarded one', async () => {
+  const removed: string[] = []
+  const store = {
+    get: vi.fn(async ({ url }: { url: string }) => {
+      expect(url).toBe('http://127.0.0.1:5100/?token=owned')
+      return [{ name: 'dsh-auth-0Older' }, { name: 'dsh-auth-0Live' }, { name: 'dsh-auth-0Oldest' }]
+    }),
+    remove: vi.fn(async (_url: string, name: string) => { removed.push(name) }),
+  }
+  expect(await forgetStaleHostCookies(store, 'http://127.0.0.1:5100/?token=owned', 'dsh-auth-0Live=v1.body.signature'))
+    .toEqual(['dsh-auth-0Older', 'dsh-auth-0Oldest'])
+  expect(removed).toEqual(['dsh-auth-0Older', 'dsh-auth-0Oldest'])
+})
+
+it('bounds the Host cookie jar to the launch that owns it', async () => {
+  const jar = new Map<string, string>()
+  const store = {
+    get: async () => [...jar.keys()].map(name => ({ name })),
+    remove: async (_url: string, name: string) => { jar.delete(name) },
+  }
+  // Every launch binds a fresh port into the cookie name, so without cleanup the
+  // jar keeps one more valid cookie per launch until the Cookie header is refused.
+  for (const port of [5100, 5101, 5102]) {
+    const name = `dsh-auth-${String(port)}`
+    await forgetStaleHostCookies(store, `http://127.0.0.1:${String(port)}/?token=owned`, `${name}=v1.body.signature`)
+    jar.set(name, 'v1.body.signature')
+  }
+  expect([...jar.keys()]).toEqual(['dsh-auth-5102'])
+})
+
+it('refuses to sweep with a cookie pair that carries no name', async () => {
+  const store = { get: vi.fn(), remove: vi.fn() }
+  await expect(forgetStaleHostCookies(store, 'http://127.0.0.1:5100/', 'v1.body.signature')).rejects.toThrow('has no name')
+  expect(store.get).not.toHaveBeenCalled()
+  expect(store.remove).not.toHaveBeenCalled()
 })
 
 it('forwards upload bytes and cancellation with Host credentials while keeping the response streaming', async () => {
